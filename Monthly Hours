@@ -279,4 +279,150 @@ GROUP BY
   MP."WorkDate_Year", 
   "Monthly Reportable Days"
 )
-group by 1,2,3,4,5,6,7,8,9,10,11,12,13
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13;
+
+
+
+// only with CTE
+
+-- CTE 1: Distinct Personnel
+WITH DistinctPersonnel AS (
+    SELECT DISTINCT
+        iff(A.COMPANY <> '', A.COMPANY, PM.PRM_COMPANY) as "Company Code",
+        PM.PRM_SOURCE_SYSTEM as "Source System",
+        UPPER(CONCAT(T.PR_LAST_NAME, ', ', T.PR_FIRST_NAME)) as "Personnel Name",
+        PM.PRM_PERSONNEL as "Personnel No.",
+        T.PR_EMAIL as "Personnel Email",
+        iff(A."StartDate" > '2023-01-01', A."StartDate", '2023-01-01') as "StartDate",
+        A."EndDate",
+        A."WS Rule",
+        A."Activity",
+        CASE WHEN A."Company Code" = '1552' THEN TW."Cost Center" ELSE A."Department Cost Center" END as "Department Cost Center",
+        CASE WHEN A."Company Code" = '1552' THEN 12
+             WHEN A."WS Rule" = '4X10TEN' THEN 10
+             ELSE 8 END as "Daily Working Hours"
+    FROM
+        UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_SV_DIM_DH_PERSONNEL_MASTER PM
+        LEFT JOIN UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_DIM_PERSONNEL_TIME_ANLT T
+            ON PM.PRM_PERSONNEL = T.PR_PERSONNEL AND T.PR_SOURCE_SYSTEM = PM.PRM_SOURCE_SYSTEM
+        LEFT JOIN UPST_PRD_SELFSERVE.FIN_HQ_TIME.CATS_ACTIVITY_CC_MAP A
+            ON PM.PTW_SI_ACTIVITY_TYPE = A.CATS_ACTIVITY
+            AND PM.PTW_WORK_SCHEDULE_RULE in ('12X28ROT', '5X8REG', '4X10TEN')
+            AND year(PM.END_DATE) >= 2023
+            AND PM.PRM_SOURCE_SYSTEM in ('NA')
+            AND PM.PRM_COMPANY in ('0954', '0980', '0985', '0988', '0605', '5034', '1552')
+)
+  
+-- CTE 2: All Months
+, AllMonths AS (
+    WITH RECURSIVE DATES AS (
+        SELECT
+            DATE '2023-01-01' AS "start_date"
+        UNION ALL
+        SELECT
+            "start_date" + INTERVAL '1 MONTH'
+        FROM DATES
+        WHERE
+            dateadd(
+                Day,
+                (CASE
+                    WHEN extract(DOW FROM Current_date - interval '3 day') = 0 THEN 4
+                    WHEN extract(DOW FROM Current_date - interval '3 day') = 1 THEN 4
+                    WHEN extract(DOW FROM Current_date - interval '3 day') = 2 THEN 4
+                    ELSE 6
+                END),
+                "start_date"
+            ) < Current_date - INTERVAL '1 MONTH'
+    )
+    SELECT
+        "start_date" AS "MonthlyBeginDate",
+        "start_date" + INTERVAL '1 MONTH' - INTERVAL '1 DAY' AS "MonthlyEndDate",
+        MONTH("start_date") as "WorkDate_Month",
+        YEAR("start_date") as "WorkDate_Year"
+    FROM DATES
+)
+
+-- CTE 3: Monthly Time
+, MonthlyTime AS (
+    SELECT
+        DP."Company Code",
+        DP."Personnel Name",
+        DP."Personnel No.",
+        DP."Personnel Email",
+        DP."WS Rule",
+        DP."Activity",
+        DP."Department Cost Center",
+        DP."Daily Working Hours",
+        DP."MonthlyBeginDate",
+        DP."MonthlyEndDate",
+        DP."WorkDate_Month" as "WorkDate Month",
+        DP."WorkDate_Year" as "WorkDate Year",
+        CASE
+            WHEN DP."WS Rule" IN ('5X8REG', '4X10TEN') THEN
+                (DATEDIFF(DAY, DP."MonthlyBeginDate", DATEADD(DAY, 1, DP."MonthlyEndDate"))
+                - DATEDIFF(WEEK, DP."MonthlyBeginDate", DATEADD(DAY, 1, DP."MonthlyEndDate")) * 2
+                - (CASE WHEN DAYNAME(DP."MonthlyBeginDate") != 'Sun' THEN 1 ELSE 0 END)
+                + (CASE WHEN DAYNAME(DP."MonthlyEndDate") != 'Sat' THEN 1 ELSE 0 END))
+            ELSE DATEDIFF(DAY, DP."MonthlyBeginDate", DATEADD(DAY, 1, DP."MonthlyEndDate"))
+        END AS "Monthly Reportable Days",
+        SUM(COALESCE(TW."TS_HOURS", 0)) as "Hours"
+    FROM
+        DistinctPersonnel DP
+        JOIN UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_MSR_TIMESHEET_ANLT TW
+            ON TW."TS_PERSONNEL" = DP."Personnel No."
+            AND TW."TS_SOURCE_SYSTEM" = DP."Source System"
+            AND TW."TS_TIMESHEET_DATE" BETWEEN DP."MonthlyBeginDate" AND DP."MonthlyEndDate"
+    WHERE
+        DP."MonthlyBeginDate" < DP."MonthlyEndDate"
+    GROUP BY
+        DP."Company Code",
+        DP."Personnel Name",
+        DP."Personnel No.",
+        DP."Personnel Email",
+        DP."WS Rule",
+        DP."Activity",
+        DP."Department Cost Center",
+        DP."Daily Working Hours",
+        DP."MonthlyBeginDate",
+        DP."MonthlyEndDate",
+        DP."WorkDate_Month",
+        DP."WorkDate_Year"
+)
+-- Main Query
+SELECT
+    MT."Company Code",
+    MT."Personnel Name",
+    MT."Personnel No.",
+    MT."Personnel Email",
+    MT."WS Rule",
+    MT."Activity",
+    MT."Department Cost Center",
+    MT."Daily Working Hours",
+    MT."MonthlyBeginDate",
+    MT."MonthlyEndDate",
+    MT."WorkDate_Month" as "WorkDate Month",
+    MT."WorkDate_Year" as "WorkDate Year",
+    MT."Monthly Reportable Days",
+    SUM(MT."Hours") as "Hours",
+    (MT."Daily Working Hours" * MT."Monthly Reportable Days" - SUM(MT."Hours")) as "Missing Hours"
+FROM
+    MonthlyTime MT
+GROUP BY
+    MT."Company Code",
+    MT."Personnel Name",
+    MT."Personnel No.",
+    MT."Personnel Email",
+    MT."WS Rule",
+    MT."Activity",
+    MT."Department Cost Center",
+    MT."Daily Working Hours",
+    MT."MonthlyBeginDate",
+    MT."MonthlyEndDate",
+    MT."WorkDate_Month",
+    MT."WorkDate_Year",
+    MT."Monthly Reportable Days";
+
+
+
+
+
