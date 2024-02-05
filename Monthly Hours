@@ -1,0 +1,282 @@
+Select      "Company Code",
+            "Personnel Name", 
+            "Personnel No.", 
+            "Personnel Email",
+            "WS Rule", 
+            "Activity",
+            "Department Cost Center",
+            "Daily Working Hours", 
+            "MonthlyBeginDate",
+            "MonthlyEndDate", 
+            "WorkDate Month" ,
+            "WorkDate Year", 
+            "Monthly Reportable Days",
+            SUM("Hours") as "Hours",
+            ("Daily Working Hours" * "Monthly Reportable Days" - SUM("Hours")) as "Missing Hours"
+
+from
+
+(Select     MP."Company Code", 
+            MP."Personnel Name", 
+            MP."Personnel No.", 
+            MP."Personnel Email",
+            MP."WS Rule", 
+            //CASE WHEN MP."Company Code" = '1552' THEN TW."Activity" else MP."Activity" end as "Activity",
+            MP."Activity",
+            MP."Department Cost Center"
+            //CASE WHEN MP."Company Code" = '1552' THEN TW."Cost Center" else MP."Department Cost Center" end as
+                "Department Cost Center",
+            //CONCAT(MP."Personnel No.",MP."Activity", MP."Source System") as "Key",
+            // CONCAT(MP."Personnel No.",MP."Department Cost Center", month(MP."StartDate"))as "Key",
+            MP."Daily Working Hours", 
+            MP."MonthlyBeginDate",
+            MP."MonthlyEndDate", 
+            MP."WorkDate_Month" as "WorkDate Month" ,
+            MP."WorkDate_Year" as "WorkDate Year", 
+            CASE 
+                WHEN MP."WS Rule" in  ('5X8REG','4X10TEN') THEN  
+                        (         DATEDIFF(DAY, MP."MonthlyBeginDate", DATEADD(DAY, 1, MP."MonthlyEndDate"))
+                                - DATEDIFF(WEEK, MP."MonthlyBeginDate", DATEADD(DAY, 1, MP."MonthlyEndDate"))*2 
+                                - (CASE WHEN DAYNAME(MP."MonthlyBeginDate") != 'Sun' THEN 1 ELSE 0 END)
+                                + (CASE WHEN DAYNAME(MP."MonthlyEndDate") != 'Sat' THEN 1 ELSE 0 END)
+                        )
+                
+                ELSE  DATEDIFF(DAY, MP."MonthlyBeginDate", DATEADD(DAY, 1, MP."MonthlyEndDate")) 
+                END AS "Monthly Reportable Days",
+            SUM(case when TW."TS_HOURS" is not null then TW."TS_HOURS" else 0 end) as "Hours"
+
+  
+  
+  
+FROM (
+         SELECT
+            TS_SOURCE_SYSTEM, TS_PERSONNEL, TS_TIMESHEET_DATE, TS_HOURS, TS_ACCOUNTING_DOCUMENT 
+         FROM
+            (
+            SELECT
+                TS_SOURCE_SYSTEM, TS_PERSONNEL, TS_TIMESHEET_DATE, TS_ACCOUNTING_DOCUMENT, TS_HOURS, 
+                ROW_NUMBER () OVER (
+                    PARTITION BY TS_SOURCE_SYSTEM, Year(TS_TIMESHEET_DATE),TS_ACCOUNTING_DOCUMENT
+                    ORDER BY TS_TIMESHEET_DATE) AS RANK  
+            FROM UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_MSR_TIMESHEET_ANLT AS TIMESHEET
+            WHERE Year(TS_TIMESHEET_DATE) = 2023
+                AND TS_STATUS = '30'
+                AND TS_SOURCE_SYSTEM = 'NA'
+                //
+            )
+            as TS
+        WHERE TS.RANK =1
+    ) TW
+
+
+
+
+// UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_MSR_TIMESHEET_ANLT TW
+//"UPST_PRD_SELFSERVE"."FIN_HQ_TIME"."VW_TIMEWRITING_MONTHLY_2023" TW
+RIGHT JOIN 
+  
+(
+    SELECT  A."Company Code",
+            A."Source System",
+            A."Personnel Name", 
+            A."Personnel No.", 
+            A."Personnel Email",
+            iff(A."StartDate" > '2023-01-01',A."StartDate",'2023-01-01') as "StartDate" , 
+            A."EndDate",
+            A."WS Rule", 
+            A."Activity",
+            A."Department Cost Center",  
+            A."Daily Working Hours",  
+            iff(A."StartDate" > B."MonthlyBeginDate",A."StartDate", B."MonthlyBeginDate") as "MonthlyBeginDate",     
+            iff(A."EndDate" < B."MonthlyEndDate", A."EndDate", "MonthlyEndDate") as "MonthlyEndDate",
+            B."WorkDate_Month",
+            B."WorkDate_Year"
+    
+    FROM  // (ALL TIMEWRITERS + MISSING TIMEWRITERS) 
+                //CROSS JOIN 
+        // (ALL MONTHS FILTERED BY PROFILE)
+  
+        // ALL TIMEWRITERS 
+                
+        (select C."Company Code", 
+              C."Source System",
+              C."Personnel Name", 
+              C."Personnel No.", 
+              C."Personnel Email",
+              C."StartDate",
+              C."EndDate",
+              C."WS Rule",
+              C."Activity",
+              C."Department Cost Center",
+              C."Daily Working Hours"
+        FROM
+        (
+        Select distinct iff(A.COMPANY <> '',A.COMPANY ,PM.PRM_COMPANY) as "Company Code",
+                    PM.PRM_SOURCE_SYSTEM as "Source System",
+                    UPPER(CONCAT(T.PR_LAST_NAME,', ', T.PR_FIRST_NAME)) as "Personnel Name",
+                    PM.PRM_PERSONNEL as "Personnel No.",
+                    T.PR_EMAIL as "Personnel Email",
+                    PM.START_DATE AS "StartDate",
+                    PM.END_DATE as "EndDate",
+                    PM.PTW_WORK_SCHEDULE_RULE as "WS Rule",
+                    PM.PTW_SI_ACTIVITY_TYPE as "Activity",
+                    case when PM.PRM_COMPANY ='1552' then LTRIM(PM.PRM_COST_CENTER, '0#') else  A.DEPARTMENT_COSTCENTER END as "Department Cost Center" ,     
+                    //A.DEPARTMENT_COSTCENTER as "Department Cost Center",
+                    
+                    CASE WHEN PM.PTW_WORK_SCHEDULE_RULE ='12X28ROT' then 12 
+                        WHEN PM.PTW_WORK_SCHEDULE_RULE ='4X10TEN' then 10
+                        ELSE 8     
+                        END as "Daily Working Hours"
+                    
+                    from 
+                    (
+                    SELECT PRM_PERSONNEL, PRM_COMPANY, PRM_SOURCE_SYSTEM, START_DATE, END_DATE, PRM_COST_CENTER, PTW_SI_ACTIVITY_TYPE, PTW_WORK_SCHEDULE_RULE
+                    FROM
+                                (SELECT PRM_PERSONNEL, PRM_COMPANY, PRM_SOURCE_SYSTEM, 
+                                    PTW_SI_START_DATE AS START_DATE, PTW_SI_END_DATE AS END_DATE, PRM_COST_CENTER, PTW_SI_ACTIVITY_TYPE, PTW_WORK_SCHEDULE_RULE
+                                FROM
+                                    (select PRM_PERSONNEL, PRM_COMPANY, PRM_SOURCE_SYSTEM, PRM_START_DATE, PRM_END_DATE, PRM_COST_CENTER
+                                    from UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_SV_DIM_DH_PERSONNEL_MASTER
+                                    WHERE PRM_SOURCE_SYSTEM ='NA' and year(PRM_END_DATE) >= 2023
+                                        and PRM_COMPANY in ('0954','0980','0985','0988','0605','5034') 
+                                      
+                                
+                                    ) M1
+                                
+                                join 
+                                    (
+                                    Select * from UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_SV_DIM_PERSONNEL_TW 
+                                    where year(PTW_END_DATE) >= 2023 
+                                    and PTW_SOURCE_SYSTEM = 'NA' 
+                                    and PTW_WORK_SCHEDULE_RULE in  ('12X28ROT', '5X8REG', '4X10TEN')
+                                    ) P1
+                                        on M1.PRM_SOURCE_SYSTEM = P1.PTW_SOURCE_SYSTEM
+                                        and M1.PRM_PERSONNEL  = P1.PTW_PERSONNEL 
+                                )
+            
+                                UNION
+            
+                                (SELECT PRM_PERSONNEL, PRM_COMPANY, PRM_SOURCE_SYSTEM, 
+                                    PRM_START_DATE AS START_DATE, PRM_END_DATE AS END_DATE, PRM_COST_CENTER, PTW_SI_ACTIVITY_TYPE, PTW_WORK_SCHEDULE_RULE
+                                
+                                FROM
+                                    (select PRM_PERSONNEL, PRM_COMPANY, PRM_SOURCE_SYSTEM, PRM_START_DATE, PRM_END_DATE, PRM_COST_CENTER
+                                    from UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_SV_DIM_DH_PERSONNEL_MASTER
+                                    WHERE PRM_SOURCE_SYSTEM ='NA' and year(PRM_END_DATE) >= 2023
+                                        and PRM_COMPANY in ('1552') 
+                                      
+                                
+                                    ) M2
+                                
+                                join 
+                                    (
+                                    Select * from UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_SV_DIM_PERSONNEL_TW 
+                                    where year(PTW_END_DATE) >= 2023 
+                                    and PTW_SOURCE_SYSTEM = 'NA' 
+                                    and PTW_WORK_SCHEDULE_RULE in  ('12X28ROT', '5X8REG', '4X10TEN')
+                                    ) P2
+                                        on M2.PRM_SOURCE_SYSTEM = P2.PTW_SOURCE_SYSTEM
+                                        and M2.PRM_PERSONNEL  = P2.PTW_PERSONNEL
+                                        AND M2.PRM_END_DATE BETWEEN P2.PTW_SI_START_DATE AND P2.PTW_SI_END_DATE
+                                )
+                    
+                   
+                    )PM
+                     
+
+                    
+                    left join 
+                        (
+                        select distinct PR_PERSONNEL, PR_LAST_NAME, PR_FIRST_NAME, PR_EMAIL, PR_SOURCE_SYSTEM
+                        from UPST_PRD_ANLT_FIN.HQ_TIMEWRITE.VW_DIM_PERSONNEL_TIME_ANLT
+                        where PR_SOURCE_SYSTEM = 'NA'
+                        ) T
+                            on PM.PRM_PERSONNEL = T.PR_PERSONNEL
+                            AND T.PR_SOURCE_SYSTEM = PM.PRM_SOURCE_SYSTEM
+                    left join 
+                        UPST_PRD_SELFSERVE.FIN_HQ_TIME.CATS_ACTIVITY_CC_MAP A
+                            ON PM.PTW_SI_ACTIVITY_TYPE = A.CATS_ACTIVITY
+                    
+                    
+                    where  year(PM.END_DATE) >= 2023
+                        and PM.PRM_SOURCE_SYSTEM in ('NA')       
+                        //and M.PRM_END_DATE between P.PTW_SI_START_DATE and P.PTW_SI_END_DATE
+                        and PM.PRM_COMPANY in ('0954','0980','0985','0988','0605','5034','1552') 
+                        and PM.PTW_WORK_SCHEDULE_RULE in  ('12X28ROT', '5X8REG', '4X10TEN')
+                        //and PM.PRM_PERSONNEL = '10255149' // 10236212'//'10289881' 
+           
+        ) C
+
+    ) A
+  
+        CROSS JOIN 
+        
+        // ALL MONTHS 
+        (
+         SELECT  "MonthlyBeginDate","MonthlyEndDate","WorkDate_Month","WorkDate_Year" 
+        FROM 
+            (
+              
+              
+            with DATES AS (
+                           
+                          SELECT  DATE '2023-01-01'  AS "start_date"
+                          UNION ALL
+                          SELECT "start_date" + INTERVAL '1 MONTH'
+                          FROM DATES
+                          WHERE 
+                                dateadd(
+                                      Day,
+                                      (case extract(DOW FROM Current_date - interval '3 day')
+                                         when 0 then 4-- monday
+                                         when 1 then 4 -- tuesday
+                                         when 2 then 4-- wednesday
+                                         else 6 -- thursday or later
+                                         end),  
+                                      "start_date"
+                                        ) < Current_date - INTERVAL '1 MONTH' 
+                            
+                          )
+
+            SELECT
+                "start_date" AS "MonthlyBeginDate",
+                "start_date" + INTERVAL '1 MONTH' - INTERVAL '1 DAY' AS "MonthlyEndDate",
+                MONTH("MonthlyBeginDate") as "WorkDate_Month",
+                YEAR("MonthlyBeginDate") as "WorkDate_Year"
+            FROM DATES  
+            )
+        ) B
+      
+) MP
+ 
+ 
+    ON  TW."TS_PERSONNEL"       = MP."Personnel No."//ON  TW."Personnel No."      = MP."Personnel No."
+    and TW."TS_SOURCE_SYSTEM"   = MP."Source System"
+    and TW."TS_TIMESHEET_DATE" BETWEEN MP."MonthlyBeginDate" AND MP."MonthlyEndDate"
+    // AND TW."TS_STATUS"='30' 
+    
+    
+where MP."MonthlyBeginDate" < MP."MonthlyEndDate"
+//and //MP."Activity" = 'UPS032'
+//MP."Personnel No." = '10255149'
+    
+GROUP BY 
+
+  MP."Source System",
+  MP."Company Code",
+  MP."Personnel Name", 
+  MP."Personnel No.", 
+  MP."Personnel Email",
+  MP."StartDate", 
+  MP."EndDate",
+  MP."WS Rule", 
+  MP."Activity", 
+  MP."Department Cost Center",
+  MP."Daily Working Hours", 
+  MP."MonthlyBeginDate",
+  MP."MonthlyEndDate", 
+  MP."WorkDate_Month",
+  MP."WorkDate_Year", 
+  "Monthly Reportable Days"
+)
+group by 1,2,3,4,5,6,7,8,9,10,11,12,13
